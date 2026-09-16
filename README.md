@@ -1,132 +1,70 @@
-# 2-Tier Python + PostgreSQL Docker Application
+# 2-Tier Python + PostgreSQL Docker & Kubernetes Application
 
 ## Overview
 
-This project demonstrates an end-to-end **2-tier containerized application** using Docker and Docker Compose.
+This project demonstrates an end-to-end 2-tier application using Python Flask and PostgreSQL, first containerized with Docker and Docker Compose and then deployed to Kubernetes using Minikube.
 
-The application consists of:
-
-* Python Flask web application
-* PostgreSQL database
-* Docker Bridge Network
-* Docker Named Volume for persistent database storage
-* Bind Mount demonstration
-* Docker Hub image push/pull
-* AWS ECR image push/pull
-* Bash health-check script
-
-The project combines the Docker, Linux, Bash scripting, networking, storage, and container registry concepts learned during the week.
-
-\---
+It covers Dockerfiles, Compose, networking, volumes, bind mounts, Docker Hub, AWS ECR, Kubernetes Deployments, Services, Ingress, ConfigMaps, Secrets, probes, scaling, rolling updates, rollbacks, and persistent storage basics.
 
 ## Architecture
 
 ```text
-                    Client
-                      |
-                      | HTTP :5000
-                      v
-             +-------------------+
-             |   Flask Web App   |
-             |   Docker Container|
-             +---------+---------+
-                       |
-                       | Docker Bridge Network
-                       | DB\_HOST=db
-                       v
-             +-------------------+
-             |    PostgreSQL     |
-             |  Docker Container |
-             +---------+---------+
-                       |
-                       v
-             +-------------------+
-             |   Named Volume   |
-             |   postgres\_data  |
-             +-------------------+
+Client
+  |
+  v
+Flask Web Tier
+  |
+  | Docker/Kubernetes network
+  v
+PostgreSQL DB Tier
+  |
+  v
+Persistent Storage
 ```
 
-\---
+## Technologies
 
-## Technologies Used
-
-* Python 3.13
-* Flask
-* PostgreSQL 16
-* Docker
-* Docker Compose
-* Bash
-* Linux
-* Docker Hub
-* AWS ECR
-
-\---
+- Python 3.13
+- Flask
+- PostgreSQL 16
+- Docker
+- Docker Compose
+- Bash/Linux
+- Kubernetes
+- Minikube
+- kubectl
+- Helm
+- Docker Hub
+- AWS ECR
 
 ## Project Structure
 
 ```text
 python-postgres-compose/
-│
 ├── app/
 │   ├── app.py
 │   └── requirements.txt
-│
 ├── scripts/
-│   └── health\_check.sh
-│
+│   └── health_check.sh
 ├── bind-mount-demo/
 │   └── hello.txt
-│
+├── k8s/
+│   ├── configmap.yaml
+│   ├── secret.example.yaml
+│   ├── postgres-deployment.yaml
+│   ├── postgres-service.yaml
+│   ├── app-deployment.yaml
+│   ├── app-service.yaml
+│   └── ingress.yaml
 ├── Dockerfile
 ├── compose.yaml
 ├── .dockerignore
 └── README.md
 ```
 
-\---
+# Docker
 
-# 1\. Application
-
-The web tier is built using Flask.
-
-### GET `/`
-
-Checks whether the Flask application is running.
-
-Example response:
-
-```text
-Python + PostgreSQL application is running!
-```
-
-### POST `/messages`
-
-Adds a message to PostgreSQL.
-
-Example:
-
-```json
-{
-  "message": "Hello from Docker Compose"
-}
-```
-
-### GET `/messages`
-
-Retrieves stored messages from PostgreSQL.
-
-Example:
-
-```text
-1 | Persistent data test
-2 | Final 2-tier capstone test
-```
-
-\---
-
-# 2\. Dockerfile
-
-The application is containerized using the following Dockerfile:
+## Dockerfile
 
 ```dockerfile
 FROM python:3.13-slim
@@ -141,605 +79,395 @@ COPY app/app.py .
 
 EXPOSE 5000
 
-CMD \["python", "app.py"]
+CMD ["python", "app.py"]
 ```
 
-## Dockerfile Best Practices Used
+### Best practices used
 
-### Small base image
+- `python:3.13-slim` keeps the base image smaller.
+- `requirements.txt` is copied before `app.py`, allowing Docker to reuse dependency layers when application code changes.
+- `pip --no-cache-dir` avoids storing pip cache in the image.
+- `.dockerignore` excludes unnecessary files from the build context.
+- Multi-stage builds were studied as an optimization technique; this small application does not require a separate build stage.
 
-```dockerfile
-FROM python:3.13-slim
-```
+## Docker Compose
 
-The slim Python image reduces image size compared with the full Python image.
+Compose manages the Flask `app` service and PostgreSQL `db` service.
 
-### Layer caching
-
-Dependencies are copied and installed before the application code:
-
-```dockerfile
-COPY app/requirements.txt .
-
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY app/app.py .
-```
-
-If only `app.py` changes, Docker can reuse the dependency installation layer from its cache.
-
-### No pip cache
+The app waits for PostgreSQL to become healthy using a healthcheck and `depends_on` condition.
 
 ```text
---no-cache-dir
+Flask app
+   |
+   | db:5432
+   v
+PostgreSQL
 ```
 
-prevents pip from storing unnecessary package cache files inside the image.
+Compose automatically creates a bridge network and service-name DNS makes `db` resolvable from the Flask container.
 
-### Multi-stage builds
+## Volumes
 
-Multi-stage builds were studied as a Docker optimization technique. They are useful when a project needs build dependencies in an earlier stage but only final runtime files in the production image. This small Flask application does not require a separate build stage, so the final capstone uses a simple single-stage Dockerfile.
-
-\---
-
-# 3\. Dockerignore
-
-The project uses `.dockerignore` to prevent unnecessary files from being sent to the Docker build context.
+PostgreSQL uses a named volume:
 
 ```text
-.git
-.gitignore
-\_\_pycache\_\_
-\*.pyc
-.venv
-venv
-bind-mount-demo
-README.md
+postgres_data
 ```
 
-This reduces build context size and keeps unnecessary files out of the image build process.
-
-\---
-
-# 4\. Docker Compose
-
-Docker Compose is used to manage the two containers:
-
-```text
-app → Flask web application
-
-db → PostgreSQL database
-```
-
-Compose also manages:
-
-* Container networking
-* Database health checks
-* Service dependencies
-* Persistent storage
-
-The application waits for PostgreSQL to become healthy:
-
-```yaml
-depends\_on:
-  db:
-    condition: service\_healthy
-```
-
-PostgreSQL uses:
-
-```yaml
-healthcheck:
-  test: \["CMD-SHELL", "pg\_isready -U appuser -d appdb"]
-```
-
-\---
-
-# 5\. Docker Networking
-
-Docker Compose automatically creates a bridge network:
-
-```text
-python-postgres-compose\_default
-```
-
-The containers communicate through this network.
-
-The Flask application connects to PostgreSQL using:
-
-```text
-DB\_HOST=db
-```
-
-Here, `db` is the PostgreSQL service name defined in `compose.yaml`.
-
-Docker's internal DNS resolves `db` to the PostgreSQL container.
-
-The application therefore does not need to hard-code the PostgreSQL container IP address.
-
-```text
-Flask Container
-      |
-      | db:5432
-      v
-PostgreSQL Container
-```
-
-The database port `5432` is used internally by the Compose network.
-
-\---
-
-# 6\. Persistent Storage
-
-PostgreSQL uses a Docker named volume:
-
-```text
-postgres\_data
-```
-
-The volume is mounted at:
+mounted at:
 
 ```text
 /var/lib/postgresql/data
 ```
 
-This separates database data from the PostgreSQL container itself.
+Persistence was tested by removing the containers with `docker compose down`, recreating them with `docker compose up -d`, and confirming the existing database data remained.
+
+`docker compose down -v` removes project volumes and can remove the stored database data.
+
+## Bind Mount
+
+A bind mount was demonstrated using:
 
 ```text
-PostgreSQL Container
-        |
-        v
-postgres\_data
-        |
-        v
-Persistent Database Data
+./bind-mount-demo:/app/data
 ```
 
-## Persistence Test
+A file created on the Windows host was successfully read from inside a Docker container.
 
-The database was tested using:
+### Named volume vs bind mount
 
-```bash
-docker compose down
-docker compose up -d
-```
+- Named volume: Docker-managed storage; useful for database data.
+- Bind mount: specific host folder mapped into the container; useful for development and files that need direct host access.
 
-After the PostgreSQL container was recreated, the existing records were still available:
+## Docker Hub
 
-```text
-1 | Persistent data test
-2 | Final 2-tier capstone test
-```
-
-This proved that the named volume preserved the database data.
-
-### Important
-
-```bash
-docker compose down
-```
-
-removes containers and the network but normally preserves named volumes.
-
-```bash
-docker compose down -v
-```
-
-also removes the volumes and can remove the stored database data.
-
-\---
-
-# 7\. Bind Mount
-
-A bind mount maps a specific host directory into a container.
-
-For this project:
-
-```text
-./bind-mount-demo
-```
-
-was mapped to:
-
-```text
-/app/data
-```
-
-A file was created on the Windows host:
-
-```text
-bind-mount-demo/hello.txt
-```
-
-with:
-
-```text
-Hello from Windows host
-```
-
-The file was successfully read from inside an Ubuntu Docker container.
-
-This demonstrated:
-
-```text
-Windows Host
-    |
-    | Bind Mount
-    v
-Docker Container
-```
-
-## Named Volume vs Bind Mount
-
-### Named Volume
-
-Docker-managed storage.
-
-Best suited for:
-
-* PostgreSQL
-* MySQL
-* MongoDB
-* Persistent application data
-
-### Bind Mount
-
-Host directory mapped to a container directory.
-
-Best suited for:
-
-* Development
-* Source code
-* Configuration files
-* Files that need direct host access
-
-\---
-
-# 8\. Running the Application
-
-Build the image and start both services:
-
-```bash
-docker compose up -d --build
-```
-
-Check the services:
-
-```bash
-docker compose ps
-```
-
-Expected:
-
-```text
-app → Up
-db  → Up (healthy)
-```
-
-\---
-
-# 9\. Application Testing
-
-Test the Flask application:
-
-```powershell
-Invoke-RestMethod http://localhost:5000/
-```
-
-Expected:
-
-```text
-Python + PostgreSQL application is running!
-```
-
-Add a message:
-
-```powershell
-Invoke-RestMethod -Uri http://localhost:5000/messages -Method Post -ContentType "application/json" -Body '{"message":"Final 2-tier capstone test"}'
-```
-
-Retrieve messages:
-
-```powershell
-Invoke-RestMethod http://localhost:5000/messages
-```
-
-Example:
-
-```text
-1 | Persistent data test
-2 | Final 2-tier capstone test
-```
-
-The application successfully inserted and retrieved records from PostgreSQL.
-
-\---
-
-# 10\. PostgreSQL Verification
-
-PostgreSQL can be accessed from the database container using:
-
-```bash
-docker compose exec db psql -U appuser -d appdb
-```
-
-Stored messages were verified directly inside PostgreSQL.
-
-Example:
-
-```text
-id | message
----+-------------------------
-1  | Persistent data test
-2  | Final 2-tier capstone test
-```
-
-\---
-
-# 11\. Bash Health Check
-
-The project includes:
-
-```text
-scripts/health\_check.sh
-```
-
-The script demonstrates Linux and Bash concepts including:
-
-* Variables
-* Functions
-* if/else
-* Command substitution
-* Script arguments
-* grep
-* df
-* curl
-* Docker Compose inspection
-
-The script checks:
-
-* Host information
-* Disk usage
-* Docker services
-* PostgreSQL availability
-* Flask application health
-
-\---
-
-# 12\. Linux Concepts Applied
-
-The project builds upon the Linux concepts practiced during the week.
-
-### File and directory operations
-
-```bash
-pwd
-ls
-cd
-mkdir
-cp
-mv
-rm
-```
-
-### Permissions
-
-```bash
-chmod
-chown
-```
-
-### Process management
-
-```bash
-ps
-top
-kill
-```
-
-### Package management
-
-```bash
-apt
-yum
-dnf
-```
-
-### Users and groups
-
-```bash
-useradd
-usermod
-groupadd
-groups
-id
-```
-
-### Disk usage
-
-```bash
-df
-du
-```
-
-### Text processing
-
-```bash
-grep
-sed
-awk
-```
-
-### Networking
-
-```bash
-ssh
-curl
-ping
-netstat
-ss
-```
-
-### Scheduling
-
-```bash
-crontab
-```
-
-### Log analysis
-
-Linux logs and application output were analyzed using command-line tools and Bash/Python scripts during the learning process.
-
-\---
-
-# 13\. Docker Hub
-
-The Flask application image was pushed to Docker Hub as:
+The application image was pushed and pulled as:
 
 ```text
 abhijeetpratap/python-postgres-compose-app:1.0
 ```
 
-The complete workflow was tested:
+Workflow:
 
 ```text
-Build
-  ↓
-Tag
-  ↓
-Push to Docker Hub
-  ↓
-Pull from Docker Hub
+Build -> Tag -> Push -> Docker Hub -> Pull
 ```
 
-Commands used:
+## AWS ECR
 
-```bash
-docker tag python-postgres-compose-app:latest abhijeetpratap/python-postgres-compose-app:1.0
-
-docker push abhijeetpratap/python-postgres-compose-app:1.0
-
-docker pull abhijeetpratap/python-postgres-compose-app:1.0
-```
-
-\---
-
-# 14\. AWS ECR
-
-An Amazon ECR repository was created in the `ap-south-1` region.
-
-Repository:
+An ECR repository was created in `ap-south-1`:
 
 ```text
 python-postgres-compose-app
 ```
 
-ECR image:
+Image:
 
 ```text
 111789566208.dkr.ecr.ap-south-1.amazonaws.com/python-postgres-compose-app:1.0
 ```
 
-The complete workflow was tested:
+Workflow:
 
 ```text
-Docker Image
-     ↓
-Authenticate with ECR
-     ↓
-Tag Image
-     ↓
-Push to ECR
-     ↓
-Pull from ECR
-     ↓
-Run Container
+Build -> Authenticate -> Tag -> Push -> ECR -> Pull -> Run
 ```
 
-The image was successfully pushed to and pulled from Amazon ECR.
+# Kubernetes
 
-\---
+## Minikube
 
-# 15\. End-to-End Workflow
+Minikube was used to run a local Kubernetes cluster with the Docker driver.
 
-The final project demonstrates:
+```bash
+minikube start
+kubectl get nodes
+```
+
+## Architecture
 
 ```text
-Developer
-    |
-    v
+                Kubernetes Cluster
+                       |
+              +--------+--------+
+              |                 |
+        Control Plane        Node
+                                |
+                                v
+                              Pods
+                                |
+                            Containers
+```
+
+Important control-plane concepts:
+
+- API Server: communication gateway.
+- Scheduler: selects where Pods run.
+- Controller Manager: works toward the desired state.
+- etcd: stores cluster state.
+
+## kubectl
+
+```bash
+kubectl get pods
+kubectl describe pod <pod>
+kubectl apply -f <file>.yaml
+kubectl delete -f <file>.yaml
+```
+
+`get` provides an overview, `describe` provides detailed information, and `apply` creates or updates declarative resources from YAML.
+
+## Deployment and Scaling
+
+The Flask image was loaded into Minikube:
+
+```bash
+minikube image load abhijeetpratap/python-postgres-compose-app:1.0
+```
+
+A Deployment was created and scaled from 2 to 4 replicas:
+
+```bash
+kubectl scale deployment python-postgres-app --replicas=4
+```
+
+## Rolling Update and Rollback
+
+The image was updated from version `1.0` to `2.0`:
+
+```bash
+kubectl set image deployment/python-postgres-app app=abhijeetpratap/python-postgres-compose-app:2.0
+kubectl rollout status deployment/python-postgres-app
+```
+
+Rollback:
+
+```bash
+kubectl rollout undo deployment/python-postgres-app
+```
+
+The final running image was verified as version `1.0`.
+
+# Kubernetes Services
+
+## ClusterIP
+
+Provides internal-only access to Pods.
+
+```text
+Application -> ClusterIP Service -> Pods
+```
+
+## NodePort
+
+Exposes a Service on a node port. It was used with Minikube to expose the Flask application.
+
+```text
+Client -> NodePort -> Service -> Pods
+```
+
+## LoadBalancer
+
+Represents an external load-balancer Service. With Minikube, `minikube tunnel` was used to make the LoadBalancer Service accessible locally.
+
+## Ingress
+
+The NGINX Ingress Controller was enabled in Minikube and the Flask application was routed through:
+
+```text
+python-app.local -> Ingress -> Flask Service -> Flask Pods
+```
+
+For the Minikube Docker driver on Windows, the hosts file mapped:
+
+```text
+127.0.0.1 python-app.local
+```
+
+The Ingress route was successfully tested over HTTP.
+
+# ConfigMaps and Secrets
+
+## ConfigMap
+
+The project uses a ConfigMap for non-sensitive PostgreSQL configuration:
+
+```text
+POSTGRES_DB=appdb
+POSTGRES_USER=appuser
+```
+
+## Secret
+
+The database password is supplied through a Kubernetes Secret. A placeholder-only `secret.example.yaml` is kept in the repository; a real password should be created separately and never committed.
+
+Important: Kubernetes Secret values are commonly base64-encoded in API/YAML representations; base64 is encoding, not encryption. Proper RBAC and cluster security are still required.
+
+The Flask Deployment receives:
+
+```text
+DB_HOST=postgres-service
+POSTGRES_DB=appdb
+POSTGRES_USER=appuser
+POSTGRES_PASSWORD=<from Secret>
+```
+
+# Liveness and Readiness Probes
+
+The Flask Deployment uses an HTTP liveness probe and readiness probe on `/` port `5000`.
+
+```text
+Liveness  -> Is the container alive? If unhealthy, Kubernetes can restart it.
+Readiness -> Is the Pod ready for traffic? If not, Service traffic can be withheld.
+```
+
+# PostgreSQL on Kubernetes
+
+PostgreSQL is deployed separately from Flask and exposed through a ClusterIP Service:
+
+```text
+postgres-service:5432
+```
+
+The Flask application connects to this stable Service name rather than a Pod IP.
+
+The Day-38 application was tested through the Flask NodePort Service, and the following record was successfully inserted into PostgreSQL:
+
+```text
+1 | Hello from Kubernetes
+```
+
+# PersistentVolume and PersistentVolumeClaim
+
+Kubernetes persistent storage was also practiced separately.
+
+```text
+Pod
+ ↓
+PVC
+ ↓
+PV
+ ↓
+Persistent Storage
+```
+
+A `1Gi` PVC using the `standard` StorageClass was dynamically bound to a PersistentVolume.
+
+Persistence was verified by writing a file to the mounted volume, deleting the Pod, recreating the Pod with the same PVC, and successfully reading the same file afterward.
+
+# Helm
+
+Helm is the package manager for Kubernetes.
+
+Helm was installed and a Bitnami repository was added:
+
+```bash
+helm repo add bitnami https://charts.bitnami.com/bitnami
+helm repo update
+```
+
+A sample NGINX chart was deployed:
+
+```bash
+helm install nginx-demo bitnami/nginx
+helm list
+```
+
+The release was verified with status `deployed`.
+
+# Linux and Bash
+
+The learning workflow also included Linux administration and Bash scripting:
+
+```text
+Filesystem navigation
+File operations
+Permissions
+File types
+Process management
+Package management
+Users and groups
+Disk usage
+Variables
+if/else
+for/while loops
+Functions
+Script arguments
+grep/sed/awk
+SSH/curl/ping/ss/netstat
+Cron jobs
+Log analysis
+```
+
+The project contains a Bash health-check script at:
+
+```text
+scripts/health_check.sh
+```
+
+# End-to-End Workflow
+
+```text
+Linux / Bash
+     |
+     v
 Dockerfile
-    |
-    v
+     |
+     v
 Docker Image
-    |
-    +--------------------+
-    |                    |
-    v                    v
-Docker Hub             AWS ECR
-    |                    |
-    v                    v
-Pull                   Pull
-    |                    |
-    +---------+----------+
+     |
+     +------------------+
+     |                  |
+     v                  v
+Docker Hub            AWS ECR
+     |                  |
+     +--------+---------+
               |
               v
-        Docker Container
+          Kubernetes
+           Minikube
+              |
+       ConfigMap + Secret
+              |
+       +------+------+
+       |             |
+       v             v
+ Flask Deployment  PostgreSQL Deployment
+       |             |
+       v             v
+ Flask Service    PostgreSQL Service
+       |             |
+       +------+------+
               |
               v
-        Flask Web Tier
-              |
-        Docker Network
+            Ingress
               |
               v
-       PostgreSQL DB Tier
-              |
-              v
-       Named Docker Volume
-              |
-              v
-       Persistent Data
+           Application
 ```
 
-\---
+# Key Learning Outcomes
 
-# 16\. Key Learning Outcomes
+This project demonstrates practical experience with:
 
-This project demonstrates practical understanding of:
-
-* Linux filesystem and navigation
-* Linux file operations and permissions
-* Linux processes and package management
-* Users and groups
-* Disk usage
-* Bash variables and control structures
-* Bash functions and script arguments
-* grep, sed, and awk
-* Networking fundamentals
-* SSH, curl, ping, and socket inspection
-* Cron jobs
-* Log analysis
-* Dockerfile optimization
-* Docker image layers
-* Docker build caching
-* `.dockerignore`
-* Multi-container applications
-* Docker Compose
-* Service dependencies
-* Health checks
-* Bridge networking
-* Named volumes
-* Bind mounts
-* Persistent database storage
-* Docker Hub
-* AWS ECR
-* End-to-end containerization
-
-\---
+- Linux administration and Bash scripting
+- Dockerfiles and image optimization
+- Docker layer caching and `.dockerignore`
+- Docker Compose and multi-container applications
+- Bridge networking and service discovery
+- Named volumes and bind mounts
+- Docker Hub and AWS ECR
+- Kubernetes Pods and Deployments
+- Replica scaling
+- Rolling updates and rollbacks
+- ClusterIP, NodePort, and LoadBalancer Services
+- NGINX Ingress
+- ConfigMaps and Secrets
+- Liveness and readiness probes
+- PersistentVolumes and PersistentVolumeClaims
+- Minikube and kubectl
+- Helm charts and releases
 
 # Conclusion
 
-This project demonstrates how a Python web application and PostgreSQL database can be containerized and managed as a complete 2-tier application.
-
-It combines Linux administration, Bash scripting, networking, Docker, Docker Compose, persistent storage, container registries, and AWS ECR into one practical workflow.
-
+This project brings together the Linux, Bash, Docker, and Kubernetes concepts learned through the practical sessions into one documented end-to-end workflow. It demonstrates how a Python web application and PostgreSQL database can be containerized, configured, networked, persisted, published to registries, and deployed and managed on a local Kubernetes cluster.
