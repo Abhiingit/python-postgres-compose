@@ -1,21 +1,38 @@
-name: Python CI
+name: CI-CD
 
 on:
   push:
+    branches:
+      - main
+
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
 
+env:
+  AWS_REGION: ap-south-1
+  ECR_REPOSITORY: python-postgres-compose-app
+  AWS_ACCOUNT_ID: "111789566208"
+  KUBECONFIG: C:\actions-runner\kubeconfig
+
 jobs:
+
+  # ---------------------------------------------------------
+  # 1. TEST + LINT
+  # Runs for pull requests and pushes to main
+  # ---------------------------------------------------------
   test-and-lint:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.13"
 
@@ -27,3 +44,210 @@ jobs:
 
       - name: Run linter
         run: ruff check .
+
+
+  # ---------------------------------------------------------
+  # 2. BUILD + PUSH TO ECR
+  # Runs only after test-and-lint succeeds on main
+  # ---------------------------------------------------------
+  build-and-push:
+    needs: test-and-lint
+
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    outputs:
+      image: ${{ steps.image-info.outputs.image }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          role-session-name: GitHubActions-${{ github.run_id }}
+          allowed-account-ids: ${{ env.AWS_ACCOUNT_ID }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+
+      - name: Export image name
+        id: image-info
+        shell: bash
+        run: |
+          echo "image=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+
+  # ---------------------------------------------------------
+  # 3. DEPLOY TO LOCAL MINIKUBE
+  # Runs on YOUR Windows machine
+  # ---------------------------------------------------------
+  deploy-minikube:
+    needs: build-and-push
+
+    runs-on:
+      - self-hosted
+      - Windows
+      - X64
+
+    permissions:
+      contents: read
+      id-token: write
+
+    env:
+      ECR_REGISTRY: 111789566208.dkr.ecr.ap-south-1.amazonaws.com
+      ECR_IMAGE: ${{ needs.build-and-push.outputs.image }}
+      K8S_POSTGRES_PASSWORD: ${{ secrets.K8S_POSTGRES_PASSWORD }}
+
+    steps:
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          role-session-name: MinikubeDeploy-${{ github.run_id }}
+          allowed-account-ids: ${{ env.AWS_ACCOUNT_ID }}
+
+      - name: Verify Kubernetes access
+        shell: powershell
+        run: |
+          kubectl config current-context
+          kubectl get nodes
+
+      - name: Verify Minikube
+        shell: powershell
+        run: |
+          kubectl get nodes -o wide
+
+      # -----------------------------------------------------
+      # PostgreSQL password
+      # Created from GitHub Secret
+      # -----------------------------------------------------
+      - name: Create PostgreSQL Kubernetes secret
+        shell: powershell
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:K8S_POSTGRES_PASSWORD)) {
+            throw "K8S_POSTGRES_PASSWORD GitHub Secret is missing."
+          }
+
+          $secretYaml = kubectl create secret generic postgres-secret `
+            --from-literal="POSTGRES_PASSWORD=$env:K8S_POSTGRES_PASSWORD" `
+            --dry-run=client `
+            -o yaml
+
+          $secretYaml | kubectl apply -f -
+
+      # -----------------------------------------------------
+      # ECR credentials for Kubernetes image pulls
+      # -----------------------------------------------------
+      - name: Create ECR image pull secret
+        shell: powershell
+        run: |
+          $ecrPassword = aws ecr get-login-password --region $env:AWS_REGION
+
+          $secretYaml = kubectl create secret docker-registry ecr-registry-secret `
+            --docker-server=$env:ECR_REGISTRY `
+            --docker-username=AWS `
+            --docker-password=$ecrPassword `
+            --dry-run=client `
+            -o yaml
+
+          $secretYaml | kubectl apply -f -
+
+      # -----------------------------------------------------
+      # Apply Kubernetes infrastructure
+      # -----------------------------------------------------
+      - name: Apply Kubernetes ConfigMap
+        shell: powershell
+        run: |
+          kubectl apply -f k8s/configmap.yaml
+
+      - name: Apply PostgreSQL Service
+        shell: powershell
+        run: |
+          kubectl apply -f k8s/postgres-service.yaml
+
+      - name: Apply PostgreSQL Deployment
+        shell: powershell
+        run: |
+          kubectl apply -f k8s/postgres-deployment.yaml
+
+      - name: Apply Application Service
+        shell: powershell
+        run: |
+          kubectl apply -f k8s/app-service.yaml
+
+      - name: Apply Application Deployment
+        shell: powershell
+        run: |
+          kubectl apply -f k8s/app-deployment.yaml
+
+      - name: Apply Ingress
+        shell: powershell
+        run: |
+          kubectl apply -f k8s/ingress.yaml
+
+      # -----------------------------------------------------
+      # Make the application deployment use ECR
+      # -----------------------------------------------------
+      - name: Configure ECR image pull
+        shell: powershell
+        run: |
+          kubectl patch deployment python-postgres-app `
+            --type=merge `
+            -p '{"spec":{"template":{"spec":{"imagePullSecrets":[{"name":"ecr-registry-secret"}]}}}}'
+
+      - name: Deploy exact ECR image
+        shell: powershell
+        run: |
+          kubectl set image deployment/python-postgres-app `
+            app=$env:ECR_IMAGE
+
+      # -----------------------------------------------------
+      # Wait for deployment
+      # -----------------------------------------------------
+      - name: Wait for PostgreSQL rollout
+        shell: powershell
+        run: |
+          kubectl rollout status deployment/postgres-db --timeout=180s
+
+      - name: Wait for application rollout
+        shell: powershell
+        run: |
+          kubectl rollout status deployment/python-postgres-app --timeout=180s
+
+      # -----------------------------------------------------
+      # Deployment verification
+      # -----------------------------------------------------
+      - name: Verify deployment
+        shell: powershell
+        run: |
+          kubectl get deployments
+          kubectl get pods -o wide
+          kubectl get services
+          kubectl get ingress
