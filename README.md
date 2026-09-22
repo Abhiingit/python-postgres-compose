@@ -468,6 +468,198 @@ This project demonstrates practical experience with:
 - Minikube and kubectl
 - Helm charts and releases
 
+
+# GitHub Actions CI
+
+This project now includes a basic **Continuous Integration (CI)** workflow using GitHub Actions.
+
+The workflow file is located at:
+
+```text
+.github/workflows/ci.yml
+```
+
+It runs automatically on every push to the repository.
+
+## CI Pipeline
+
+```text
+Git Push
+   ↓
+GitHub Actions
+   ↓
+Checkout Repository
+   ↓
+Set up Python 3.13
+   ↓
+Install Development Dependencies
+   ↓
+Run pytest
+   ↓
+Run Ruff Linter
+   ↓
+CI Result
+```
+
+## Automated Tests
+
+Pytest was added in:
+
+```text
+tests/test_app.py
+```
+
+The test verifies that the Flask application's `/` endpoint returns HTTP 200 and the expected response.
+
+The test was verified locally with:
+
+```bash
+python -m pytest -q
+```
+
+Result:
+
+```text
+1 passed
+```
+
+## Code Linting
+
+Ruff is used to perform automated Python code quality checks.
+
+Run locally with:
+
+```bash
+ruff check .
+```
+
+The project passes the Ruff checks after fixing the import-order issue detected during development.
+
+## Development Dependencies
+
+Development-only tools are stored separately in:
+
+```text
+requirements-dev.txt
+```
+
+Contents:
+
+```text
+-r app/requirements.txt
+pytest
+ruff
+```
+
+## GitHub Actions Workflow
+
+The workflow uses `actions/checkout` and `actions/setup-python` and runs on an Ubuntu runner.
+
+```yaml
+name: Python CI
+
+on:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements-dev.txt
+
+      - name: Run tests
+        run: python -m pytest -q
+
+      - name: Run linter
+        run: ruff check .
+```
+
+## CI Result
+
+The workflow was pushed to GitHub and successfully executed. The repository shows a green check for the CI workflow after the push.
+
+## Updated Project Structure
+
+```text
+python-postgres-compose/
+│
+├── .github/
+│   └── workflows/
+│       └── ci.yml
+│
+├── app/
+│   ├── app.py
+│   ├── __init__.py
+│   └── requirements.txt
+│
+├── tests/
+│   └── test_app.py
+│
+├── scripts/
+│   └── health_check.sh
+│
+├── bind-mount-demo/
+│   └── hello.txt
+│
+├── k8s/
+│   ├── configmap.yaml
+│   ├── secret.example.yaml
+│   ├── postgres-deployment.yaml
+│   ├── postgres-service.yaml
+│   ├── app-deployment.yaml
+│   ├── app-service.yaml
+│   └── ingress.yaml
+│
+├── requirements-dev.txt
+├── Dockerfile
+├── compose.yaml
+├── .dockerignore
+└── README.md
+```
+
+## Updated End-to-End Workflow
+
+```text
+Linux / Bash
+      ↓
+Dockerfile
+      ↓
+Docker Image
+      ↓
+Docker Compose
+      ↓
+Flask + PostgreSQL
+      ↓
+Docker Hub / AWS ECR
+      ↓
+Kubernetes / Minikube
+      ↓
+Deployments + Services + ConfigMap + Secret
+      ↓
+Probes + Scaling + Rolling Updates + Rollbacks
+      ↓
+GitHub Actions
+      ↓
+Automated Tests + Linting
+```
+
+## CI Learning Outcome
+
+The project now includes a basic Continuous Integration workflow that automatically validates Python code on every push. This connects the Docker and Kubernetes work with a practical software-development workflow in which code changes are automatically tested and linted before further deployment steps.
+
 # Conclusion
 
 This project brings together the Linux, Bash, Docker, and Kubernetes concepts learned through the practical sessions into one documented end-to-end workflow. It demonstrates how a Python web application and PostgreSQL database can be containerized, configured, networked, persisted, published to registries, and deployed and managed on a local Kubernetes cluster.
