@@ -101,7 +101,7 @@ jobs:
 
   # ---------------------------------------------------------
   # 3. DEPLOY TO LOCAL MINIKUBE
-  # Runs on YOUR Windows machine
+  # Runs on YOUR Windows self-hosted runner
   # ---------------------------------------------------------
   deploy-minikube:
     needs: build-and-push
@@ -122,21 +122,16 @@ jobs:
 
     steps:
 
+      # -----------------------------------------------------
+      # Checkout
+      # -----------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Add CLI tools to PATH
-        shell: powershell
-        run: |
-          "C:\actions-runner" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          "C:\Program Files\Amazon\AWSCLIV2" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
-      - name: Verify Kubernetes access
-        shell: powershell
-        run: |
-          & "C:\actions-runner\kubectl.exe" config current-context
-          & "C:\actions-runner\kubectl.exe" get nodes
-
+      # -----------------------------------------------------
+      # AWS authentication using GitHub OIDC
+      # -----------------------------------------------------
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6.3.0
         with:
@@ -145,20 +140,31 @@ jobs:
           role-session-name: MinikubeDeploy-${{ github.run_id }}
           allowed-account-ids: ${{ env.AWS_ACCOUNT_ID }}
 
+
+      # -----------------------------------------------------
+      # Verify Kubernetes access
+      # Use absolute kubectl path because the runner
+      # service does not use the normal user's PATH
+      # -----------------------------------------------------
       - name: Verify Kubernetes access
         shell: powershell
         run: |
-          kubectl config current-context
-          kubectl get nodes
+          & "C:\actions-runner\kubectl.exe" --kubeconfig "C:\actions-runner\kubeconfig" config current-context
+          & "C:\actions-runner\kubectl.exe" --kubeconfig "C:\actions-runner\kubeconfig" get nodes
 
+
+      # -----------------------------------------------------
+      # Verify Minikube
+      # -----------------------------------------------------
       - name: Verify Minikube
         shell: powershell
         run: |
-          & "C:\actions-runner\kubectl.exe" get nodes -o wide
+          & "C:\actions-runner\kubectl.exe" --kubeconfig "C:\actions-runner\kubeconfig" get nodes -o wide
+
 
       # -----------------------------------------------------
-      # PostgreSQL password
-      # Created from GitHub Secret
+      # Create/update PostgreSQL Kubernetes secret
+      # Password comes from GitHub Secret
       # -----------------------------------------------------
       - name: Create PostgreSQL Kubernetes secret
         shell: powershell
@@ -167,99 +173,168 @@ jobs:
             throw "K8S_POSTGRES_PASSWORD GitHub Secret is missing."
           }
 
-          $secretYaml = kubectl create secret generic postgres-secret `
+          $secretYaml = & "C:\actions-runner\kubectl.exe" `
+            --kubeconfig "C:\actions-runner\kubeconfig" `
+            create secret generic postgres-secret `
             --from-literal="POSTGRES_PASSWORD=$env:K8S_POSTGRES_PASSWORD" `
             --dry-run=client `
             -o yaml
 
-          $secretYaml | kubectl apply -f -
+          $secretYaml | & "C:\actions-runner\kubectl.exe" `
+            --kubeconfig "C:\actions-runner\kubeconfig" `
+            apply -f -
+
 
       # -----------------------------------------------------
-      # ECR credentials for Kubernetes image pulls
+      # Create/update ECR image pull secret
       # -----------------------------------------------------
       - name: Create ECR image pull secret
         shell: powershell
         run: |
-          $ecrPassword = aws ecr get-login-password --region $env:AWS_REGION
+          $ecrPassword = & "C:\Program Files\Amazon\AWSCLIV2\aws.exe" `
+            ecr get-login-password `
+            --region $env:AWS_REGION
 
-          $secretYaml = kubectl create secret docker-registry ecr-registry-secret `
+          if ([string]::IsNullOrWhiteSpace($ecrPassword)) {
+            throw "Failed to obtain ECR login password."
+          }
+
+          $secretYaml = & "C:\actions-runner\kubectl.exe" `
+            --kubeconfig "C:\actions-runner\kubeconfig" `
+            create secret docker-registry ecr-registry-secret `
             --docker-server=$env:ECR_REGISTRY `
             --docker-username=AWS `
             --docker-password=$ecrPassword `
             --dry-run=client `
             -o yaml
 
-          $secretYaml | kubectl apply -f -
+          $secretYaml | & "C:\actions-runner\kubectl.exe" `
+            --kubeconfig "C:\actions-runner\kubeconfig" `
+            apply -f -
+
 
       # -----------------------------------------------------
-      # Apply Kubernetes infrastructure
+      # Apply Kubernetes ConfigMap
       # -----------------------------------------------------
       - name: Apply Kubernetes ConfigMap
         shell: powershell
         run: |
-          kubectl apply -f k8s/configmap.yaml
+          & "C:\actions-runner\kubectl.exe" `
+            --kubeconfig "C:\actions-runner\kubeconfig" `
+            apply -f k8s/configmap.yaml
 
+
+      # -----------------------------------------------------
+      # Apply PostgreSQL Service
+      # -----------------------------------------------------
       - name: Apply PostgreSQL Service
         shell: powershell
         run: |
-          kubectl apply -f k8s/postgres-service.yaml
+          & "C:\actions-runner\kubectl.exe" `
+            --kubeconfig "C:\actions-runner\kubeconfig" `
+            apply -f k8s/postgres-service.yaml
 
+
+      # -----------------------------------------------------
+      # Apply PostgreSQL Deployment
+      # -----------------------------------------------------
       - name: Apply PostgreSQL Deployment
         shell: powershell
         run: |
-          kubectl apply -f k8s/postgres-deployment.yaml
+          & "C:\actions-runner\kubectl.exe" `
+            --kubeconfig "C:\actions-runner\kubeconfig" `
+            apply -f k8s/postgres-deployment.yaml
 
+
+      # -----------------------------------------------------
+      # Apply Application Service
+      # -----------------------------------------------------
       - name: Apply Application Service
         shell: powershell
         run: |
-          kubectl apply -f k8s/app-service.yaml
+          & "C:\actions-runner\kubectl.exe" `
+            --kubeconfig "C:\actions-runner\kubeconfig" `
+            apply -f k8s/app-service.yaml
 
+
+      # -----------------------------------------------------
+      # Apply Application Deployment
+      # imagePullSecrets is already declared in
+      # k8s/app-deployment.yaml
+      # -----------------------------------------------------
       - name: Apply Application Deployment
         shell: powershell
         run: |
-          kubectl apply -f k8s/app-deployment.yaml
+          & "C:\actions-runner\kubectl.exe" `
+            --kubeconfig "C:\actions-runner\kubeconfig" `
+            apply -f k8s/app-deployment.yaml
 
+
+      # -----------------------------------------------------
+      # Apply Ingress
+      # -----------------------------------------------------
       - name: Apply Ingress
         shell: powershell
         run: |
-          kubectl apply -f k8s/ingress.yaml
+          & "C:\actions-runner\kubectl.exe" `
+            --kubeconfig "C:\actions-runner\kubeconfig" `
+            apply -f k8s/ingress.yaml
+
 
       # -----------------------------------------------------
-      # Make the application deployment use ECR
+      # Deploy the exact ECR image produced by this commit
       # -----------------------------------------------------
-      - name: Configure ECR image pull
-        shell: powershell
-        run: |
-          kubectl patch deployment python-postgres-app `
-            --type=merge `
-            -p '{"spec":{"template":{"spec":{"imagePullSecrets":[{"name":"ecr-registry-secret"}]}}}}'
-
       - name: Deploy exact ECR image
         shell: powershell
         run: |
-          kubectl set image deployment/python-postgres-app `
+          & "C:\actions-runner\kubectl.exe" `
+            --kubeconfig "C:\actions-runner\kubeconfig" `
+            set image deployment/python-postgres-app `
             app=$env:ECR_IMAGE
 
+
       # -----------------------------------------------------
-      # Wait for deployment
+      # Wait for PostgreSQL rollout
       # -----------------------------------------------------
       - name: Wait for PostgreSQL rollout
         shell: powershell
         run: |
-          kubectl rollout status deployment/postgres-db --timeout=180s
+          & "C:\actions-runner\kubectl.exe" `
+            --kubeconfig "C:\actions-runner\kubeconfig" `
+            rollout status deployment/postgres-db `
+            --timeout=180s
 
+
+      # -----------------------------------------------------
+      # Wait for application rollout
+      # -----------------------------------------------------
       - name: Wait for application rollout
         shell: powershell
         run: |
-          kubectl rollout status deployment/python-postgres-app --timeout=180s
+          & "C:\actions-runner\kubectl.exe" `
+            --kubeconfig "C:\actions-runner\kubeconfig" `
+            rollout status deployment/python-postgres-app `
+            --timeout=180s
+
 
       # -----------------------------------------------------
-      # Deployment verification
+      # Final deployment verification
       # -----------------------------------------------------
       - name: Verify deployment
         shell: powershell
         run: |
-          kubectl get deployments
-          kubectl get pods -o wide
-          kubectl get services
-          kubectl get ingress
+          & "C:\actions-runner\kubectl.exe" `
+            --kubeconfig "C:\actions-runner\kubeconfig" `
+            get deployments
+
+          & "C:\actions-runner\kubectl.exe" `
+            --kubeconfig "C:\actions-runner\kubeconfig" `
+            get pods -o wide
+
+          & "C:\actions-runner\kubectl.exe" `
+            --kubeconfig "C:\actions-runner\kubeconfig" `
+            get services
+
+          & "C:\actions-runner\kubectl.exe" `
+            --kubeconfig "C:\actions-runner\kubeconfig" `
+            get ingress
